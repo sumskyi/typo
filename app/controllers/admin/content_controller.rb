@@ -3,6 +3,7 @@ require 'base64'
 module Admin; end
 class Admin::ContentController < Admin::BaseController
   layout "administration", :except => [:show, :autosave]
+  before_filter :check_admin, :only => :merge
 
   cache_sweeper :blog_sweeper
 
@@ -13,7 +14,7 @@ class Admin::ContentController < Admin::BaseController
 
   def index
     @search = params[:search] ? params[:search] : {}
-    
+
     @articles = Article.search_with_pagination(@search, {:page => params[:page], :per_page => this_blog.admin_display_elements})
 
     if request.xhr?
@@ -44,7 +45,7 @@ class Admin::ContentController < Admin::BaseController
       flash[:error] = _("Error, you are not allowed to perform this action")
       return(redirect_to :action => 'index')
     end
-    
+
     return(render 'admin/shared/destroy') unless request.post?
 
     @record.destroy
@@ -77,7 +78,7 @@ class Admin::ContentController < Admin::BaseController
 
   def attachment_save(attachment)
     begin
-      Resource.create(:filename => attachment.original_filename, :mime => attachment.content_type.chomp, 
+      Resource.create(:filename => attachment.original_filename, :mime => attachment.content_type.chomp,
                       :created_at => Time.now).write_to_disk(attachment)
     rescue => e
       logger.info(e.message)
@@ -92,7 +93,7 @@ class Admin::ContentController < Admin::BaseController
     @article.text_filter = current_user.text_filter if current_user.simple_editor?
 
     get_fresh_or_existing_draft_for_article
-    
+
     @article.attributes = params[:article]
     @article.published = false
     set_article_author
@@ -113,7 +114,32 @@ class Admin::ContentController < Admin::BaseController
     render :text => nil
   end
 
+  def merge
+    article1 = Article.find_by_id(params[:id])
+    article2 = Article.find_by_id(params[:merge_with])
+
+    unless article1 && article2
+      flash[:notice] = "Merge failed!"
+      redirect_to :action => :index
+      return
+    end
+
+    if article1.merge_with(article2)
+      flash[:notice] = "Merge succeeded!"
+    else
+      flash[:notice] = "Merge failed!"
+    end
+    redirect_to :action => :index
+  end
+
   protected
+
+  def check_admin
+    return true if current_user.admin?
+
+    flash[:error] =  "The articles can't be merged"
+    redirect_to :back
+  end
 
   def get_fresh_or_existing_draft_for_article
     if @article.published and @article.id
@@ -159,13 +185,13 @@ class Admin::ContentController < Admin::BaseController
     @article.keywords = Tag.collection_to_string @article.tags
     @article.attributes = params[:article]
     # TODO: Consider refactoring, because double rescue looks... weird.
-        
+
     @article.published_at = DateTime.strptime(params[:article][:published_at], "%B %e, %Y %I:%M %p GMT%z").utc rescue Time.parse(params[:article][:published_at]).utc rescue nil
 
     if request.post?
       set_article_author
       save_attachments
-      
+
       @article.state = "draft" if @article.draft
 
       if @article.save
